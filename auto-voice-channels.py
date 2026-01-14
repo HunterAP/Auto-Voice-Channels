@@ -86,7 +86,8 @@ class LoopChecks:
     def __init__(self, client, tick):
         self._client = client
         self._time = time()
-        self._loop = asyncio.get_event_loop()
+        # Do not store an explicit event loop; use running loop/helpers instead
+        self._loop = None
         self._tick = tick
 
     async def waiting_loop(self):
@@ -137,10 +138,10 @@ class LoopChecks:
             await asyncio.sleep(self._tick)
 
     def start_loops(self):
-        self._loop.create_task(self.timer())
-        self._loop.create_task(self.waiting_loop())
-        self._loop.create_task(self.active_loop())
-        self._loop.create_task(self.other_loops())
+        asyncio.create_task(self.timer())
+        asyncio.create_task(self.waiting_loop())
+        asyncio.create_task(self.active_loop())
+        asyncio.create_task(self.other_loops())
 
 
 def cleanup(client, tick_):
@@ -174,7 +175,7 @@ def cleanup(client, tick_):
         if ADMIN is None:
             ADMIN = await client.fetch_user(cfg.CONFIG["admin_id"])
 
-    asyncio.get_event_loop().create_task(first_start(client))
+    asyncio.create_task(first_start(client))
 
     end_time = time()
     fn_name = "cleanup"
@@ -189,7 +190,7 @@ async def main_loop(client):
     main_loop.last_run = datetime.now(pytz.utc)
     start_time = time()
     if client.is_ready():
-        guilds = await asyncio.get_event_loop().run_in_executor(POOL, func.get_guilds, client)
+        guilds = await asyncio.get_running_loop().run_in_executor(POOL, func.get_guilds, client)
         for guild in guilds:
             settings = utils.get_serv_settings(guild)
             if settings["enabled"] and settings["auto_channels"]:
@@ -222,7 +223,7 @@ async def creation_loop(client):
 
     start_time = time()
     if client.is_ready():
-        guilds = await asyncio.get_event_loop().run_in_executor(POOL, func.get_guilds, client)
+        guilds = await asyncio.get_running_loop().run_in_executor(POOL, func.get_guilds, client)
         for guild in guilds:
             settings = utils.get_serv_settings(guild)
             if settings["enabled"] and settings["auto_channels"]:
@@ -309,7 +310,7 @@ async def check_dead(client):
     start_time = time()
     if client.is_ready():
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            await client.loop.run_in_executor(pool, for_looper, client)
+            await asyncio.get_running_loop().run_in_executor(pool, for_looper, client)
         end_time = time()
         fn_name = "check_dead"
         cfg.TIMINGS[fn_name] = end_time - start_time
@@ -593,7 +594,7 @@ async def lingering_secondaries(client):
     if client.is_ready():
         potentials = None
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            potentials = await client.loop.run_in_executor(pool, get_potentials)
+            potentials = await asyncio.get_running_loop().run_in_executor(pool, get_potentials)
         potentials = potentials.split("\n")
         if potentials:
             # Sets apparently give better performance. Discard all but last 10k.
@@ -649,7 +650,7 @@ async def analytics(client):
             "m": round(psutil.virtual_memory().used / 1024 / 1024 / 1024, 2),
         }
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            await client.loop.run_in_executor(pool, utils.write_json, fp, data)
+            await asyncio.get_running_loop().run_in_executor(pool, utils.write_json, fp, data)
         end_time = time()
         fn_name = "analytics"
         cfg.TIMINGS[fn_name] = end_time - start_time
@@ -692,7 +693,7 @@ async def check_patreon(client):
 
     check_patreon.last_run = datetime.now(pytz.utc)
     if client.is_ready():
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             POOL,
             partial(
                 lambda: asyncio.run(
