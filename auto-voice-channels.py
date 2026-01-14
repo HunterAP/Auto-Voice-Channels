@@ -138,10 +138,26 @@ class LoopChecks:
             await asyncio.sleep(self._tick)
 
     def start_loops(self):
-        asyncio.create_task(self.timer())
-        asyncio.create_task(self.waiting_loop())
-        asyncio.create_task(self.active_loop())
-        asyncio.create_task(self.other_loops())
+        # Prevent starting loops more than once
+        if getattr(self, "_started", False):
+            return
+        self._started = True
+
+        # Prefer the client's running loop when available to avoid
+        # RuntimeError: no running event loop when called outside of
+        # an active asyncio context.
+        loop = getattr(self._client, "loop", None)
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # Fallback to get_event_loop for older Python versions
+                loop = asyncio.get_event_loop()
+
+        loop.create_task(self.timer())
+        loop.create_task(self.waiting_loop())
+        loop.create_task(self.active_loop())
+        loop.create_task(self.other_loops())
 
 
 def cleanup(client, tick_):
@@ -175,7 +191,11 @@ def cleanup(client, tick_):
         if ADMIN is None:
             ADMIN = await client.fetch_user(cfg.CONFIG["admin_id"])
 
-    asyncio.create_task(first_start(client))
+    try:
+        client.loop.create_task(first_start(client))
+    except Exception:
+        # Fallback if client.loop isn't available
+        asyncio.get_event_loop().create_task(first_start(client))
 
     end_time = time()
     fn_name = "cleanup"
@@ -784,7 +804,10 @@ class MyClient(discord.AutoShardedClient):
         if self.ready_once:
             return
 
-        asyncio.create_task(self.start_chunking())
+        try:
+            self.loop.create_task(self.start_chunking())
+        except Exception:
+            asyncio.create_task(self.start_chunking())
 
         print("=" * 24)
         curtime = datetime.now(pytz.timezone(cfg.CONFIG["log_timezone"])).strftime("%Y-%m-%d %H:%M")
