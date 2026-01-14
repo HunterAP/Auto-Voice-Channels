@@ -143,16 +143,14 @@ class LoopChecks:
             return
         self._started = True
 
-        # Prefer the client's running loop when available to avoid
-        # RuntimeError: no running event loop when called outside of
-        # an active asyncio context.
-        loop = getattr(self._client, "loop", None)
-        if loop is None:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # Fallback to get_event_loop for older Python versions
-                loop = asyncio.get_event_loop()
+        # Start tasks on the currently running event loop. Do NOT access
+        # `client.loop` directly because discord.py raises when accessed
+        # from synchronous contexts; instead use asyncio.get_running_loop().
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop in this context — fall back to get_event_loop()
+            loop = asyncio.get_event_loop()
 
         loop.create_task(self.timer())
         loop.create_task(self.waiting_loop())
@@ -191,11 +189,10 @@ def cleanup(client, tick_):
         if ADMIN is None:
             ADMIN = await client.fetch_user(cfg.CONFIG["admin_id"])
 
-    try:
-        client.loop.create_task(first_start(client))
-    except Exception:
-        # Fallback if client.loop isn't available
-        asyncio.get_event_loop().create_task(first_start(client))
+    # Schedule the async startup helper on the running loop. This function
+    # will be invoked from `MyClient.setup_hook` (an async context), so
+    # asyncio.create_task is appropriate here.
+    asyncio.create_task(first_start(client))
 
     end_time = time()
     fn_name = "cleanup"
@@ -839,6 +836,25 @@ class MyClient(discord.AutoShardedClient):
         else:
             await func.admin_log("🟥🟧🟨🟩   **Ready**   🟩🟨🟧🟥", self)
 
+    async def setup_hook(self):
+        # Called by discord.py during startup inside an async context.
+        # Perform initial cleanup and start background loops here so
+        # we don't access event-loop related attributes from sync code.
+        try:
+            cleanup(client=self, tick_=1)
+        except Exception:
+            # cleanup schedules its own async tasks; ignore failures here
+            pass
+
+        for ln, l in loops.items():
+            try:
+                l.add_exception_type(RuntimeError)
+                l.error(loop_error_override)
+                l.start(self)
+            except Exception:
+                # Don't let loop registration stop startup
+                pass
+
 
 heartbeat_timeout = cfg.CONFIG["heartbeat_timeout"] if "heartbeat_timeout" in cfg.CONFIG else 60
 if NUM_SHARDS > 1:
@@ -1341,10 +1357,10 @@ async def loop_error_override(Exception):
     except:
         pass  # Such programming wow
 
+async def _deferred_startup():
+    # This function exists to keep a reference for the event loop if
+    # something external wants to await startup; normally discord.py
+    # will call MyClient.setup_hook automatically.
+    return
 
-cleanup(client=client, tick_=1)
-for ln, l in loops.items():
-    l.add_exception_type(RuntimeError)
-    l.error(loop_error_override)
-    l.start(client)
 client.run(TOKEN)
